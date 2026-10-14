@@ -378,6 +378,121 @@ button:focus-visible {
   text-shadow: 1px 1px 0 #000;
 }
 
+#side-panel {
+  width: 204px;
+  background: #3e3529;
+  border: 2px solid #1f1a14;
+  box-shadow: inset 0 0 0 2px #5b4d3a;
+  border-radius: 4px;
+  padding: 6px;
+}
+
+#tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+#tabs button {
+  flex: 1;
+  font: 600 12px system-ui, sans-serif;
+  color: var(--parchment);
+  background: #5a4b38;
+  border: 1px solid #1f1a14;
+  border-radius: 3px 3px 0 0;
+  padding: 3px 0;
+  cursor: pointer;
+}
+
+#tabs button[aria-selected='true'] {
+  background: #7a2b1c;
+  color: var(--gold);
+}
+
+#inventory {
+  display: grid;
+  grid-template-columns: repeat(4, 42px);
+  grid-auto-rows: 36px;
+  gap: 2px 6px;
+  justify-content: center;
+}
+
+.slot {
+  position: relative;
+  display: grid;
+  place-items: center;
+  border-radius: 3px;
+  user-select: none;
+  touch-action: none;
+}
+
+.slot:hover {
+  background: #ffffff12;
+}
+
+.slot img {
+  width: 36px;
+  height: 32px;
+  image-rendering: pixelated;
+  pointer-events: none;
+}
+
+.slot .fallback {
+  font-size: 9px;
+  text-align: center;
+  line-height: 1.1;
+  color: var(--parchment);
+  pointer-events: none;
+}
+
+.slot .count {
+  position: absolute;
+  top: -1px;
+  left: 1px;
+  font: 700 11px system-ui, sans-serif;
+  text-shadow: 1px 1px 0 #000;
+  pointer-events: none;
+}
+
+#skills {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 3px;
+}
+
+.skill {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  font: 11px system-ui, sans-serif;
+  color: var(--parchment);
+  background: #2e271e;
+  border: 1px solid #1f1a14;
+  border-radius: 3px;
+  padding: 2px 0 4px;
+  overflow: hidden;
+}
+
+.skill .lvl {
+  color: var(--gold);
+  font-weight: 700;
+}
+
+.skill i {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--ok);
+}
+
+.skill.total {
+  grid-column: 1 / -1;
+  color: var(--gold);
+  font-weight: 700;
+}
+
 #settings {
   display: flex;
   flex-direction: column;

@@ -1,6 +1,6 @@
 import { TICK_MS } from '../engine/game.ts';
 import type { FromEngine, MenuOption, PlayerState, SquareMessage, ToEngine } from '../engine/protocol.ts';
-import { buildAvatar } from './render/avatar.ts';
+import { avatarPose, buildAvatarParts } from './render/avatar.ts';
 import { Renderer } from './render/renderer.ts';
 import { wheelPixels } from './capabilities.ts';
 import { Minimap } from './minimap.ts';
@@ -23,6 +23,8 @@ export interface ClientOptions {
   onFatal(message: string): void;
   onStatus(message: string, fraction: number): void;
   onReady(): void;
+  /** Inventory / skills / icon updates for the side panel. */
+  onPanel?(msg: Extract<FromEngine, { t: 'inventory' | 'skills' | 'itemIcon' }>): void;
 }
 
 /** UI-thread side: renders what the engine worker sends and forwards player input to it. */
@@ -51,7 +53,7 @@ export class GameClient {
 
   constructor(private readonly opts: ClientOptions) {
     this.renderer = new Renderer($('view'));
-    this.renderer.setAvatar(buildAvatar());
+    this.renderer.setAvatarParts(buildAvatarParts());
     this.minimap = new Minimap($('minimap'));
     opts.worker.onmessage = (e: MessageEvent<FromEngine>) => this.onMessage(e.data);
     opts.worker.onerror = (e) => opts.onFatal(`Engine crashed: ${e.message || 'unknown error'}`);
@@ -85,6 +87,14 @@ export class GameClient {
         break;
       case 'square':
         this.addSquare(msg);
+        break;
+      case 'groundItems':
+        this.renderer.setGroundItems(msg.mesh);
+        break;
+      case 'inventory':
+      case 'skills':
+      case 'itemIcon':
+        this.opts.onPanel?.(msg);
         break;
       case 'unload':
         this.renderer.removeSquare(msg.rx, msg.ry);
@@ -186,7 +196,9 @@ export class GameClient {
     this.renderer.setCamera([gx, ground + 1.1, -gy], this.yaw, this.pitch, this.zoom);
     const maxPlane = this.showRoofs ? 3 : this.player.maxPlane;
     this.renderer.fogRange = [this.fogStart(), this.fogStart() + 22];
-    this.renderer.render(maxPlane, [gx, ground, -gy], this.facing);
+    const moving = this.walkSteps.length > 0 && performance.now() - this.tickStart < 600;
+    const pose = avatarPose(now / 1000, moving, this.player.running, this.player.action);
+    this.renderer.render(maxPlane, [gx, ground, -gy], this.facing, pose);
     this.minimap.draw(pos.x, pos.y, this.player.plane, this.yaw, this.player);
     ($('compass').firstElementChild as HTMLElement).style.transform = `rotate(${-this.yaw}rad)`;
 
@@ -369,6 +381,12 @@ export class GameClient {
     });
   }
 
+  /** Opens the game's context menu for an inventory slot at a screen position. */
+  openItemMenu(x: number, y: number, slot: number): void {
+    this.menuAt = { x, y };
+    this.send({ t: 'itemMenu', seq: ++this.menuSeq, slot });
+  }
+
   /** Test/debug hooks (exposed as window.__game). */
   debug() {
     const self = this;
@@ -387,7 +405,7 @@ export class GameClient {
         const maxPlane = self.showRoofs ? 3 : (self.player?.maxPlane ?? 3);
         const pos = self.interpolated();
         const ground = self.groundY(pos.x + 0.5, pos.y + 0.5, self.player?.plane ?? 0);
-        self.renderer.render(maxPlane, [pos.x + 0.5, ground, -(pos.y + 0.5)], self.facing);
+        self.renderer.render(maxPlane, [pos.x + 0.5, ground, -(pos.y + 0.5)], self.facing, avatarPose(0, false, false, null));
         const pts: [number, number][] = [];
         for (let i = 1; i <= 5; i++) for (let j = 1; j <= 5; j++) pts.push([i / 6, j / 6]);
         return self.renderer.sample(pts);

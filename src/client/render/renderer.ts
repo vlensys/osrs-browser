@@ -1,6 +1,7 @@
 import type { SquareMessage } from '../../engine/protocol.ts';
 import type { MeshData } from '../../world/mesh.ts';
-import { identity, lookAt, multiply, perspective, translationRotationY, type Mat4 } from './mat4.ts';
+import type { AvatarPart, AvatarPose } from './avatar.ts';
+import { identity, lookAt, multiply, perspective, rotationX, translation, translationRotationY, type Mat4 } from './mat4.ts';
 
 const VERT = `#version 300 es
 layout(location = 0) in vec3 aPos;
@@ -81,8 +82,8 @@ export class Renderer {
   private program!: WebGLProgram;
   private uniforms!: Record<string, WebGLUniformLocation | null>;
   private readonly squares = new Map<number, GpuSquare>();
-  private avatar: GpuMesh | null = null;
-  private avatarData: MeshData | null = null;
+  private avatarParts: { part: AvatarPart; gpu: GpuMesh }[] = [];
+  private groundItems: GpuMesh | null = null;
   private textureArray: WebGLTexture | null = null;
   private animTexture: WebGLTexture | null = null;
   private atlas: { layers: number; pixels: Uint8Array; anim: Float32Array } | null = null;
@@ -192,7 +193,8 @@ export class Renderer {
         if (pl.translucent) pl.translucent = this.upload(pl.translucent.data);
       }
     }
-    if (this.avatarData) this.avatar = this.upload(this.avatarData);
+    this.avatarParts = this.avatarParts.map(({ part }) => ({ part, gpu: this.upload(part.mesh) }));
+    if (this.groundItems) this.groundItems = this.groundItems.count ? this.upload(this.groundItems.data) : null;
   }
 
   private upload(data: MeshData): GpuMesh {
@@ -243,10 +245,14 @@ export class Renderer {
     this.squares.delete(key);
   }
 
-  setAvatar(data: MeshData): void {
-    this.free(this.avatar);
-    this.avatarData = data;
-    this.avatar = this.upload(data);
+  setAvatarParts(parts: AvatarPart[]): void {
+    for (const p of this.avatarParts) this.free(p.gpu);
+    this.avatarParts = parts.map((part) => ({ part, gpu: this.upload(part.mesh) }));
+  }
+
+  setGroundItems(mesh: MeshData): void {
+    this.free(this.groundItems);
+    this.groundItems = mesh.vertexCount ? this.upload(mesh) : null;
   }
 
   /** Keeps the drawing buffer matched to CSS size × devicePixelRatio (Windows 125%/150% scaling etc.). */
@@ -269,7 +275,7 @@ export class Renderer {
     this.viewProj = multiply(proj, lookAt(this.eye, target, [0, 1, 0]));
   }
 
-  private drawScene(maxPlane: number, pickPass: boolean, avatarModel: Mat4 | null): void {
+  private drawScene(maxPlane: number, pickPass: boolean, avatar: { base: Mat4; pose: AvatarPose } | null): void {
     const gl = this.gl;
     const u = this.uniforms;
     gl.useProgram(this.program);
@@ -300,10 +306,20 @@ export class Renderer {
         gl.drawArrays(gl.TRIANGLES, 0, m.count);
       }
     }
-    if (this.avatar && avatarModel && !pickPass) {
-      gl.uniformMatrix4fv(u.uModel, false, avatarModel);
-      gl.bindVertexArray(this.avatar.vao);
-      gl.drawArrays(gl.TRIANGLES, 0, this.avatar.count);
+    if (this.groundItems) {
+      gl.bindVertexArray(this.groundItems.vao);
+      gl.drawArrays(gl.TRIANGLES, 0, this.groundItems.count);
+    }
+    if (avatar && !pickPass) {
+      const base = multiply(avatar.base, translation(0, avatar.pose.bob, 0));
+      for (const { part, gpu } of this.avatarParts) {
+        const angle = part.name === 'body' ? 0 : avatar.pose[part.name];
+        const [px, py, pz] = part.pivot;
+        const m = angle ? multiply(base, multiply(translation(px, py, pz), multiply(rotationX(angle), translation(-px, -py, -pz)))) : base;
+        gl.uniformMatrix4fv(u.uModel, false, m);
+        gl.bindVertexArray(gpu.vao);
+        gl.drawArrays(gl.TRIANGLES, 0, gpu.count);
+      }
       gl.uniformMatrix4fv(u.uModel, false, ident);
     }
     if (!pickPass) {
@@ -325,15 +341,15 @@ export class Renderer {
     gl.bindVertexArray(null);
   }
 
-  render(maxPlane: number, avatarPos: number[] | null, avatarFacing: number): void {
+  render(maxPlane: number, avatarPos: number[] | null, avatarFacing: number, pose: AvatarPose): void {
     if (this.lost) return;
     const gl = this.gl;
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
     gl.clearColor(this.fogColour[0], this.fogColour[1], this.fogColour[2], 1);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-    const model = avatarPos ? translationRotationY(avatarPos[0], avatarPos[1], avatarPos[2], -avatarFacing + Math.PI) : null;
-    this.drawScene(maxPlane, false, model);
+    const base = avatarPos ? translationRotationY(avatarPos[0], avatarPos[1], avatarPos[2], -avatarFacing + Math.PI) : null;
+    this.drawScene(maxPlane, false, base ? { base, pose } : null);
   }
 
   private ensurePickTarget(): void {

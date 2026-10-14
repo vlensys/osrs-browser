@@ -512,6 +512,121 @@ export class SceneBuilder {
     }
   }
 
+  // --- items ----------------------------------------------------------------------------------
+
+  /**
+   * An item's inventory model, rotated by its icon angles (2048 units per turn) and lit, in model units.
+   * Used both for inventory icons and (lying on the floor) for ground items.
+   */
+  async itemMesh(objId: number, forIcon: boolean): Promise<{ mesh: MeshData; min: [number, number, number]; max: [number, number, number] } | null> {
+    const obj = this.world.configs.obj(objId);
+    if (!obj || obj.inventoryModel < 0) return null;
+    const m = await this.model(obj.inventoryModel);
+    if (!m) return null;
+    const toRad = (u: number) => (u / 2048) * Math.PI * 2;
+    // Icons use the item's stored view angles; on the floor items lie flat with a fixed yaw.
+    const ax = forIcon ? toRad(obj.xan2d) : 0;
+    const ay = forIcon ? toRad(obj.yan2d) : 0;
+    const az = forIcon ? toRad(obj.zan2d) : 0;
+    const n = m.vertexCount;
+    const px = new Float32Array(n);
+    const py = new Float32Array(n);
+    const pz = new Float32Array(n);
+    const min: [number, number, number] = [Infinity, Infinity, Infinity];
+    const max: [number, number, number] = [-Infinity, -Infinity, -Infinity];
+    for (let i = 0; i < n; i++) {
+      // Model space → y-up space, scaled.
+      let x = (m.vx[i] * obj.resizeX) / 128;
+      let y = (-m.vy[i] * obj.resizeY) / 128;
+      let z = (m.vz[i] * obj.resizeZ) / 128;
+      // Roll (z), yaw (y), then pitch (x), like the client's icon renderer.
+      let t = x * Math.cos(az) - y * Math.sin(az);
+      y = x * Math.sin(az) + y * Math.cos(az);
+      x = t;
+      t = x * Math.cos(ay) + z * Math.sin(ay);
+      z = -x * Math.sin(ay) + z * Math.cos(ay);
+      x = t;
+      t = y * Math.cos(ax) - z * Math.sin(ax);
+      z = y * Math.sin(ax) + z * Math.cos(ax);
+      y = t;
+      px[i] = x;
+      py[i] = y;
+      pz[i] = z;
+      min[0] = Math.min(min[0], x);
+      min[1] = Math.min(min[1], y);
+      min[2] = Math.min(min[2], z);
+      max[0] = Math.max(max[0], x);
+      max[1] = Math.max(max[1], y);
+      max[2] = Math.max(max[2], z);
+    }
+    const out = new MeshBuilder();
+    const [lx, ly, lz] = forIcon ? [-0.4, 0.75, 0.55] : this.light;
+    const ambient = 64 + obj.ambient;
+    const contrast = 768 + obj.contrast;
+    for (let f = 0; f < m.faceCount; f++) {
+      if ((m.faceRenderType ? m.faceRenderType[f] : 0) === 2) continue;
+      if ((m.faceAlpha ? m.faceAlpha[f] : 0) >= 254) continue;
+      let hsl = m.faceColour[f];
+      if (obj.recolFrom) {
+        const k = obj.recolFrom.indexOf(hsl);
+        if (k >= 0) hsl = obj.recolTo![k] & 0xffff;
+      }
+      let tex = m.faceTexture ? m.faceTexture[f] : -1;
+      if (tex >= 0 && obj.retexFrom) {
+        const k = obj.retexFrom.indexOf(tex);
+        if (k >= 0) tex = obj.retexTo![k];
+      }
+      const t = tex >= 0 ? this.world.configs.texture(tex) : undefined;
+      if (t) hsl = t.averageRgb;
+      const a = m.fa[f];
+      const b = m.fb[f];
+      const c = m.fc[f];
+      const ux = px[b] - px[a];
+      const uy = py[b] - py[a];
+      const uz = pz[b] - pz[a];
+      const vx = px[c] - px[a];
+      const vy = py[c] - py[a];
+      const vz = pz[c] - pz[a];
+      const nx = -(uy * vz - uz * vy);
+      const ny = -(uz * vx - ux * vz);
+      const nz = -(ux * vy - uy * vx);
+      const len = Math.hypot(nx, ny, nz) || 1;
+      const cos = (nx * lx + ny * ly + nz * lz) / len / (Math.hypot(lx, ly, lz) || 1);
+      const L = Math.min(126, Math.max(2, ambient + (65536 * Math.abs(cos)) / contrast));
+      const rgb = hslToRgb(shadeHsl(hsl, L / 128));
+      for (const v of [a, b, c]) out.vertex(px[v] * UNIT, py[v] * UNIT, -pz[v] * UNIT, rgb, 255, 0);
+    }
+    return {
+      mesh: out.finish(),
+      min: [min[0] * UNIT, min[1] * UNIT, -max[2] * UNIT],
+      max: [max[0] * UNIT, max[1] * UNIT, -min[2] * UNIT],
+    };
+  }
+
+  /** All ground items as one mesh: each item's model lying at its tile centre. Pick id = the item's uid. */
+  async buildGroundItems(items: { uid: number; id: number; x: number; y: number; plane: number }[]): Promise<MeshData> {
+    const out = new MeshBuilder();
+    for (const g of items) {
+      const im = await this.itemMesh(g.id, false);
+      if (!im) continue;
+      const dataPlane = this.world.dataPlaneAt(g.plane, g.x, g.y);
+      const ground = -this.world.heightAt(dataPlane, g.x + 0.5, g.y + 0.5) * UNIT;
+      const m = im.mesh;
+      // Ground items are drawn smaller than in-hand and centred on the tile.
+      const cx = (im.min[0] + im.max[0]) / 2;
+      const cz = (im.min[2] + im.max[2]) / 2;
+      const s = 0.5;
+      for (let i = 0; i < m.vertexCount; i++) {
+        const x = (m.positions[i * 3] - cx) * s + g.x + 0.5;
+        const y = (m.positions[i * 3 + 1] - im.min[1]) * s + ground + 0.01;
+        const z = (m.positions[i * 3 + 2] - cz) * s - (g.y + 0.5);
+        const rgb = (m.colours[i * 4] << 16) | (m.colours[i * 4 + 1] << 8) | m.colours[i * 4 + 2];
+        out.vertex(x, y, z, rgb, 255, g.uid);
+      }
+    }
+    return out.finish();
+  }
+
   // --- minimap -------------------------------------------------------------------------------
 
   private buildMinimap(sq: Square, z: number): Uint8ClampedArray {

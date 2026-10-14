@@ -26,12 +26,15 @@ export default defineConfig({
       name: 'firefox',
       use: {
         ...devices['Desktop Firefox'],
-        // CI VMs have no GPU and Firefox blocklists their GL: allow its in-process software WebGL (llvmpipe/WARP).
+        // CI VMs have no GPU and Firefox blocklists their GL, so force WebGL on (software rendering is fine).
+        // On Linux, Firefox also needs a display for GL: CI runs it headed under Xvfb (PW_HEADED=1) and
+        // uses in-process WebGL with Mesa's llvmpipe. In-process WebGL crashes Firefox on Windows, so not there.
         launchOptions: {
+          headless: process.env.PW_HEADED !== '1',
           firefoxUserPrefs: {
             'webgl.force-enabled': true,
             'webgl.disable-fail-if-major-performance-caveat': true,
-            'webgl.out-of-process': false,
+            ...(process.platform === 'linux' ? { 'webgl.out-of-process': false } : {}),
           },
         },
       },

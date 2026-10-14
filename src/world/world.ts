@@ -48,6 +48,11 @@ export interface Square {
 
 let nextUid = 1;
 
+/** Unique id for anything clickable that isn't a tile (locs, ground items). */
+export function allocUid(): number {
+  return nextUid++;
+}
+
 /** Deterministic smooth noise for tiles whose height is procedurally generated. */
 function noise2(x: number, y: number): number {
   let n = Math.imul(x, 0x1b873593) ^ Math.imul(y, 0x2c1b3c6d);
@@ -288,6 +293,14 @@ export class World {
       }
     }
     return out;
+  }
+
+  /** Swaps a loc's definition in place (tree → stump, ore → empty rock, -1 = removed); returns squares to rebuild. */
+  replaceLoc(loc: LocInstance, id: number): Set<number> {
+    this.setLocCollision(loc, false);
+    loc.id = id;
+    this.setLocCollision(loc, true);
+    return new Set([((loc.x >> 6) << 8) | (loc.y >> 6)]);
   }
 
   findLoc(uid: number): { loc: LocInstance; square: Square } | null {

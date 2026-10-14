@@ -14,7 +14,42 @@ export type ActionRef =
   | { kind: 'walk'; x: number; y: number }
   | { kind: 'loc'; uid: number; op: number }
   | { kind: 'examine'; uid: number }
+  | { kind: 'examineObj'; id: number }
+  | { kind: 'item'; slot: number; op: number }
+  | { kind: 'moveItem'; from: number; to: number }
+  | { kind: 'take'; uid: number }
   | { kind: 'cancel' };
+
+export interface GroundItem {
+  uid: number;
+  id: number;
+  count: number;
+  x: number;
+  y: number;
+  plane: number;
+  expires: number;
+}
+
+export interface InventoryView {
+  slots: ({ id: number; count: number; name: string; stackable: boolean } | null)[];
+}
+
+export interface SkillView {
+  skill: string;
+  level: number;
+  xp: number;
+  /** XP at the start of this level and of the next one (for progress bars / tooltips). */
+  levelXp: number;
+  nextXp: number;
+}
+
+export interface ItemIcon {
+  id: number;
+  mesh: MeshData;
+  /** Bounding box of the mesh (model units) for framing. */
+  min: [number, number, number];
+  max: [number, number, number];
+}
 
 export interface PlayerState {
   x: number;
@@ -31,6 +66,8 @@ export interface PlayerState {
   facing: number;
   /** Highest plane to render (lower when indoors so roofs and upper floors are hidden). */
   maxPlane: number;
+  /** Skilling animation to play, if any. */
+  action: 'chop' | 'mine' | null;
 }
 
 export type ToEngine =
@@ -42,7 +79,10 @@ export type ToEngine =
   | { t: 'run'; enabled: boolean }
   | { t: 'command'; text: string }
   | { t: 'drawRadius'; radius: number }
-  | { t: 'save' };
+  | { t: 'save' }
+  | { t: 'itemMenu'; seq: number; slot: number }
+  | { t: 'itemClick'; slot: number }
+  | { t: 'itemIcon'; id: number };
 
 export interface SquareMessage {
   t: 'square';
@@ -66,4 +106,8 @@ export type FromEngine =
   | { t: 'tick'; tick: number; player: PlayerState }
   | { t: 'chat'; text: string; kind: 'game' | 'system' | 'error' }
   | { t: 'menu'; seq: number; options: MenuOption[] }
-  | { t: 'hover'; seq: number; option: MenuOption | null };
+  | { t: 'hover'; seq: number; option: MenuOption | null }
+  | { t: 'inventory'; view: InventoryView }
+  | { t: 'skills'; skills: SkillView[]; total: number }
+  | { t: 'itemIcon'; icon: ItemIcon | null; id: number }
+  | { t: 'groundItems'; mesh: MeshData };

@@ -82,6 +82,14 @@
           <button id="run-orb" title="Toggle run" aria-pressed="false"><span class="icon">⚡</span><span id="run-energy">100</span></button>
         </div>
         <div id="coords"></div>
+        <section id="side-panel" aria-label="Side panel">
+          <div id="tabs" role="tablist">
+            <button role="tab" data-tab="skills" aria-selected="false" title="Skills">Skills</button>
+            <button role="tab" data-tab="inventory" aria-selected="true" title="Inventory">Inventory</button>
+          </div>
+          <div id="page-inventory" class="tab-page" role="tabpanel"><div id="inventory"></div></div>
+          <div id="page-skills" class="tab-page" role="tabpanel" hidden><div id="skills"></div></div>
+        </section>
         <div class="hud-buttons">
           <button id="btn-settings" class="button small">Settings</button>
         </div>

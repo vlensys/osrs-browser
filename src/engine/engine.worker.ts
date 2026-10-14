@@ -10,7 +10,8 @@ import { meshTransferables } from '../world/mesh.ts';
 import { SceneBuilder } from '../world/scene-builder.ts';
 import { World, type Square } from '../world/world.ts';
 import { Game, TICK_MS, type SaveGame } from './game.ts';
-import type { FromEngine, SquareMessage, ToEngine } from './protocol.ts';
+import type { FromEngine, InventoryView, SkillView, SquareMessage, ToEngine } from './protocol.ts';
+import { XP_TABLE } from './skills.ts';
 
 declare const self: DedicatedWorkerGlobalScope;
 
@@ -63,6 +64,9 @@ async function boot(radius: number): Promise<void> {
       }
     },
     regionChanged: () => scheduleRegion(),
+    inventoryChanged: () => postInventory(),
+    skillsChanged: () => postSkills(),
+    groundItemsChanged: () => scheduleGroundItems(),
   });
   try {
     game.load(await idbGet<SaveGame>(STORE_SAVES, SAVE_SLOT));
@@ -77,6 +81,8 @@ async function boot(radius: number): Promise<void> {
     game.teleport(3222, 3218, 0);
     await regionWork;
   }
+  postInventory();
+  postSkills();
   post({ t: 'ready', revision: await cache.revision(), player: game.state() });
   post({ t: 'chat', text: 'Welcome to Old School RuneScape (offline, in your browser).', kind: 'system' });
 
@@ -89,6 +95,40 @@ async function boot(radius: number): Promise<void> {
       post({ t: 'chat', text: `Tick error: ${(e as Error).message}`, kind: 'error' });
     }
   }, TICK_MS);
+}
+
+function postInventory(): void {
+  const view: InventoryView = {
+    slots: game.inventory.slots.map((s) => {
+      if (!s) return null;
+      const obj = world.configs.obj(s.id);
+      return { id: s.id, count: s.count, name: obj?.name ?? `Item ${s.id}`, stackable: obj?.stackable ?? false };
+    }),
+  };
+  post({ t: 'inventory', view });
+}
+
+function postSkills(): void {
+  const skills: SkillView[] = game.skills.snapshot().map(({ skill, level, xp }) => ({
+    skill,
+    level,
+    xp,
+    levelXp: XP_TABLE[level],
+    nextXp: level < 99 ? XP_TABLE[level + 1] : XP_TABLE[99],
+  }));
+  post({ t: 'skills', skills, total: game.skills.totalLevel() });
+}
+
+let groundWork: Promise<void> = Promise.resolve();
+let groundDirty = false;
+function scheduleGroundItems(): void {
+  if (groundDirty) return;
+  groundDirty = true;
+  groundWork = groundWork.then(async () => {
+    groundDirty = false;
+    const mesh = await builder.buildGroundItems(game.groundItems);
+    post({ t: 'groundItems', mesh }, meshTransferables(mesh));
+  });
 }
 
 async function persist(): Promise<void> {
@@ -228,6 +268,21 @@ self.onmessage = (e: MessageEvent<ToEngine>) => {
       break;
     case 'save':
       void persist();
+      break;
+    case 'itemClick':
+      game.itemDefault(msg.slot);
+      break;
+    case 'itemMenu':
+      post({ t: 'menu', seq: msg.seq, options: game.itemMenu(msg.slot) });
+      break;
+    case 'itemIcon':
+      void builder.itemMesh(msg.id, true).then((im) => {
+        if (!im) {
+          post({ t: 'itemIcon', id: msg.id, icon: null });
+          return;
+        }
+        post({ t: 'itemIcon', id: msg.id, icon: { id: msg.id, mesh: im.mesh, min: im.min, max: im.max } }, meshTransferables(im.mesh));
+      });
       break;
   }
 };

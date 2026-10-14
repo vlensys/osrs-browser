@@ -76,3 +76,23 @@ export function translationRotationY(x: number, y: number, z: number, angle: num
   m[14] = z;
   return m;
 }
+
+export function translation(x: number, y: number, z: number): Mat4 {
+  const m = identity();
+  m[12] = x;
+  m[13] = y;
+  m[14] = z;
+  return m;
+}
+
+/** Rotation about the x axis; positive swings the -z (forward) side upwards. */
+export function rotationX(angle: number): Mat4 {
+  const c = Math.cos(angle);
+  const s = Math.sin(angle);
+  const m = identity();
+  m[5] = c;
+  m[6] = -s;
+  m[9] = s;
+  m[10] = c;
+  return m;
+}

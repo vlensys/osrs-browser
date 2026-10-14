@@ -1,6 +1,7 @@
 import { unsupportedReason } from './client/capabilities.ts';
 import { GameClient } from './client/game-client.ts';
 import { WebGLUnavailableError } from './client/render/renderer.ts';
+import { SidePanel } from './client/side-panel.ts';
 import { forgetCache, importCache, storedCacheMeta } from './storage/cache-import.ts';
 import { downloadLatestCache } from './storage/openrs2.ts';
 
@@ -121,13 +122,21 @@ function startGame(): void {
     $('loading-actions').hidden = false;
     show('loading');
   };
+  let panel: SidePanel | null = null;
   try {
     client = new GameClient({
       worker,
       onStatus: (m, f) => setProgress(progress, m, f),
       onFatal: fail,
       onReady: () => show('game'),
+      onPanel: (msg) => panel?.handle(msg),
     });
+    const c = client;
+    panel = new SidePanel(
+      (msg) => c.send(msg),
+      (x, y, slot) => c.openItemMenu(x, y, slot),
+    );
+    panel.show('inventory');
   } catch (e) {
     worker.terminate();
     if (e instanceof WebGLUnavailableError) {

@@ -47,10 +47,16 @@ jobs:
       - run: npx playwright install --with-deps ${{ matrix.browser }}
       - run: npm run build
       # Uses an original, generated test cache (tools/fixture) — no Jagex data in CI.
-      - run: npx playwright test --project=${{ matrix.browser }}
+      - name: Run Playwright (Linux, under Xvfb so Firefox gets a GL display)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npx playwright test --project=${{ matrix.browser }}
         env:
-          # GPU-less Linux runners: make Mesa's software rasteriser the GL driver.
-          LIBGL_ALWAYS_SOFTWARE: ${{ runner.os == 'Linux' && '1' || '' }}
+          PW_HEADED: ${{ matrix.browser == 'firefox' && '1' || '' }}
+          # GPU-less runners: make Mesa's software rasteriser the GL driver.
+          LIBGL_ALWAYS_SOFTWARE: '1'
+      - name: Run Playwright (Windows)
+        if: runner.os == 'Windows'
+        run: npx playwright test --project=${{ matrix.browser }}
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

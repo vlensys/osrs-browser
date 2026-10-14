@@ -1,6 +1,7 @@
 import { Archive, ConfigGroup, type Cache } from '../cache/cache.ts';
 import { Packet } from '../cache/packet.ts';
 import { hslToRgb } from '../util/colour.ts';
+import { decodeObj, type ObjDef } from './obj.ts';
 import { decodeSprites } from './sprite.ts';
 
 export class UnknownOpcodeError extends Error {
@@ -474,6 +475,11 @@ export class ConfigStore {
   private locFiles: Map<number, Uint8Array> | null = null;
   private readonly locs = new Map<number, LocDef>();
   private textures: Map<number, TextureDef> | null = null;
+  private objFiles: Map<number, Uint8Array> | null = null;
+  private readonly objs = new Map<number, ObjDef>();
+  private objNames: Map<string, number> | null = null;
+  private depleted = new Map<number, number>();
+  private locIndex: { name: string; id: number; model: number; sizeX: number; sizeY: number }[] | null = null;
 
   constructor(readonly cache: Cache) {}
 
@@ -486,6 +492,7 @@ export class ConfigStore {
     this.underlays = new Map([...(under ?? [])].map(([id, d]) => [id, decodeUnderlay(id, d)]));
     this.overlays = new Map([...(over ?? [])].map(([id, d]) => [id, decodeOverlay(id, d)]));
     this.locFiles = locs ?? new Map();
+    this.objFiles = (await this.cache.files(Archive.Configs, ConfigGroup.Obj)) ?? new Map();
     this.textures = new Map();
     const texFiles = await this.cache.files(Archive.Textures, 0);
     for (const [id, d] of texFiles ?? []) {
@@ -582,6 +589,63 @@ export class ConfigStore {
     }
     this.locs.set(id, def);
     return def;
+  }
+
+  obj(id: number): ObjDef | undefined {
+    let def = this.objs.get(id);
+    if (def) return def;
+    const data = this.objFiles?.get(id);
+    if (!data) return undefined;
+    try {
+      def = decodeObj(id, data);
+    } catch (e) {
+      console.warn(String(e));
+      return undefined;
+    }
+    this.objs.set(id, def);
+    return def;
+  }
+
+  /** The canonical (unnoted, non-placeholder, has an icon model) item with this exact name. */
+  objByName(name: string): ObjDef | undefined {
+    if (!this.objNames) {
+      this.objNames = new Map();
+      for (const id of [...(this.objFiles?.keys() ?? [])].sort((a, b) => a - b)) {
+        const d = this.obj(id);
+        if (!d || d.name === 'null' || d.notedTemplate >= 0 || d.inventoryModel < 0) continue;
+        const key = d.name.toLowerCase();
+        if (!this.objNames.has(key)) this.objNames.set(key, id);
+      }
+    }
+    const id = this.objNames.get(name.toLowerCase());
+    return id === undefined ? undefined : this.obj(id);
+  }
+
+  /**
+   * What a gathered tree/rock turns into: a "Tree stump" of the same footprint for trees, or the plain "Rocks"
+   * that shares the ore rock's model (ore rocks are recoloured empty rocks). -1 = simply remove it.
+   */
+  depletedFor(locId: number): number {
+    const cached = this.depleted.get(locId);
+    if (cached !== undefined) return cached;
+    if (!this.locIndex) {
+      this.locIndex = [];
+      for (const id of this.locFiles!.keys()) {
+        const d = this.loc(id);
+        if (d && d.models && d.models.length) this.locIndex.push({ name: d.name, id, model: d.models[0], sizeX: d.sizeX, sizeY: d.sizeY });
+      }
+    }
+    const def = this.loc(locId);
+    let out = -1;
+    if (def?.models?.length) {
+      if (/tree|evergreen/i.test(def.name)) {
+        out = this.locIndex.find((l) => l.name === 'Tree stump' && l.sizeX === def.sizeX && l.sizeY === def.sizeY)?.id ?? -1;
+      } else if (/rocks$/i.test(def.name)) {
+        out = this.locIndex.find((l) => l.name === 'Rocks' && l.model === def.models![0] && l.id !== locId)?.id ?? -1;
+      }
+    }
+    this.depleted.set(locId, out);
+    return out;
   }
 
   locCount(): number {

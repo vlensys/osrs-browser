@@ -1,9 +1,12 @@
 import type { LocDef } from '../defs/config.ts';
 import { findPath, type Tile } from '../world/pathfinder.ts';
-import { SIDE_DX, SIDE_DY } from '../world/collision.ts';
+import { Flag, SIDE_DX, SIDE_DY } from '../world/collision.ts';
 import { decodePick } from '../world/mesh.ts';
-import { isWall, LocType, type LocInstance, type World } from '../world/world.ts';
-import type { ActionRef, MenuOption, PlayerState } from './protocol.ts';
+import { allocUid, isWall, LocType, type LocInstance, type World } from '../world/world.ts';
+import { AXES, PICKAXES, resourceFor, successChance, type Resource } from './gathering.ts';
+import { Inventory, type Slot } from './inventory.ts';
+import type { ActionRef, GroundItem, MenuOption, PlayerState } from './protocol.ts';
+import { Skills } from './skills.ts';
 
 export const TICK_MS = 600;
 export const SPAWN = { x: 3222, y: 3218, plane: 0 };
@@ -18,6 +21,9 @@ export interface SaveGame {
   ticks: number;
   /** Doors etc. the player has toggled: uid-independent key -> new rotation/offset. */
   toggledLocs: string[];
+  /** XP per skill, in tenths. */
+  skills?: Record<string, number>;
+  inventory?: (Slot | null)[];
 }
 
 export interface GameEvents {
@@ -26,7 +32,20 @@ export interface GameEvents {
   locsChanged(squares: Set<number>): void;
   /** The player moved into a different map square or plane. */
   regionChanged(): void;
+  inventoryChanged?(): void;
+  skillsChanged?(): void;
+  groundItemsChanged?(): void;
 }
+
+interface Gathering {
+  loc: LocInstance;
+  res: Resource;
+  toolBonus: number;
+  timer: number;
+}
+
+/** Ground items despawn after 3 minutes, like the game's public timer. */
+const GROUND_ITEM_TICKS = 300;
 
 interface Pending {
   loc: LocInstance;
@@ -36,9 +55,9 @@ interface Pending {
 const locKey = (l: { id: number; plane: number; x: number; y: number; type: number }) => `${l.id}:${l.plane}:${l.x}:${l.y}:${l.type}`;
 
 /**
- * Authoritative single-player game state, advanced once per 600 ms tick. Content beyond movement and
- * generic scenery interactions (doors, ladders, stairs) is not implemented: the cache carries no
- * server-side scripts, NPC spawns or drop tables.
+ * Authoritative single-player game state, advanced once per 600 ms tick: movement, doors, ladders and
+ * stairs, skills, an inventory, woodcutting/mining and ground items. The cache carries no server-side
+ * scripts, NPC spawns or drop tables, so other content isn't implemented.
  */
 export class Game {
   x = SPAWN.x;
@@ -55,14 +74,36 @@ export class Game {
   /** Locs swung open/closed by the player, keyed by their original placement. */
   private toggled = new Set<string>();
   private dirty = false;
+  readonly skills = new Skills();
+  readonly inventory: Inventory;
+  private gathering: Gathering | null = null;
+  private readonly respawns: { at: number; loc: LocInstance; id: number }[] = [];
+  readonly groundItems: GroundItem[] = [];
 
   constructor(
     readonly world: World,
     readonly events: GameEvents,
-  ) {}
+  ) {
+    this.inventory = new Inventory((id) => this.world.configs.obj(id)?.stackable ?? false);
+  }
+
+  /** A new character starts with an axe and a pickaxe from the cache's item list. */
+  newGame(): void {
+    for (const name of ['Bronze axe', 'Bronze pickaxe']) {
+      const obj = this.world.configs.objByName(name);
+      if (obj) this.inventory.add(obj.id);
+    }
+    this.dirty = true;
+  }
 
   load(save: SaveGame | undefined): void {
-    if (!save || save.version !== 1) return;
+    if (!save || save.version !== 1) {
+      this.newGame();
+      return;
+    }
+    this.skills.load(save.skills);
+    if (save.inventory) this.inventory.load(save.inventory);
+    else this.newGame();
     this.x = save.x;
     this.y = save.y;
     this.plane = save.plane;
@@ -83,6 +124,8 @@ export class Game {
       energy: this.energy,
       ticks: this.ticks,
       toggledLocs: [...this.toggled],
+      skills: this.skills.toJSON(),
+      inventory: this.inventory.toJSON(),
     };
   }
 
@@ -106,6 +149,7 @@ export class Game {
       steps: this.stepsThisTick,
       facing: this.facing,
       maxPlane: this.world.maxVisiblePlane(this.plane, this.x, this.y),
+      action: this.gathering ? (this.gathering.res.skill === 'Woodcutting' ? 'chop' : 'mine') : null,
     };
   }
 
@@ -157,7 +201,14 @@ export class Game {
   menu(pick: number): MenuOption[] {
     const p = decodePick(pick);
     const options: MenuOption[] = [];
-    if (p.kind === 'loc') {
+    const ground = p.kind === 'loc' ? this.groundItems.find((g) => g.uid === p.uid) : undefined;
+    if (ground) {
+      const obj = this.world.configs.obj(ground.id);
+      const name = obj?.name ?? 'item';
+      options.push({ verb: 'Take', target: name, action: { kind: 'take', uid: ground.uid } });
+      options.push({ verb: 'Walk here', target: '', action: { kind: 'walk', x: ground.x, y: ground.y } });
+      options.push({ verb: 'Examine', target: name, action: { kind: 'examineObj', id: ground.id } });
+    } else if (p.kind === 'loc') {
       const found = this.world.findLoc(p.uid);
       const def = found && this.activeDef(found.loc);
       if (found && def && def.name !== 'null') {
@@ -168,6 +219,9 @@ export class Game {
       if (found) options.push({ verb: 'Walk here', target: '', action: { kind: 'walk', x: found.loc.x, y: found.loc.y } });
       if (found && def && def.name !== 'null') options.push({ verb: 'Examine', target: def.name, action: { kind: 'examine', uid: p.uid } });
     } else if (p.kind === 'tile') {
+      for (const g of this.groundItems.filter((g) => g.plane === p.plane && g.x === p.x && g.y === p.y)) {
+        options.push({ verb: 'Take', target: this.world.configs.obj(g.id)?.name ?? 'item', action: { kind: 'take', uid: g.uid } });
+      }
       options.push({ verb: 'Walk here', target: '', action: { kind: 'walk', x: p.x, y: p.y } });
       for (const loc of this.world.locsAt(p.plane, p.x, p.y)) {
         const def = this.activeDef(loc);
@@ -184,7 +238,28 @@ export class Game {
   /** The default (left-click) option: first loc op if any, else walk. */
   defaultOption(pick: number): MenuOption | null {
     const opts = this.menu(pick);
-    return opts.find((o) => o.action.kind === 'loc') ?? opts.find((o) => o.action.kind === 'walk') ?? null;
+    return opts.find((o) => o.action.kind === 'loc' || o.action.kind === 'take') ?? opts.find((o) => o.action.kind === 'walk') ?? null;
+  }
+
+  /** Left-click on an inventory item: its first listed op, if any. */
+  itemDefault(slot: number): void {
+    const opt = this.itemMenu(slot).find((o) => o.action.kind === 'item');
+    if (opt) this.act(opt.action);
+  }
+
+  /** Right-click options for an inventory slot: the item's own ops from the cache, then Examine. */
+  itemMenu(slot: number): MenuOption[] {
+    const s = this.inventory.slots[slot];
+    if (!s) return [];
+    const obj = this.world.configs.obj(s.id);
+    const name = obj?.name ?? 'item';
+    const options: MenuOption[] = [];
+    (obj?.invOps ?? [null, null, null, null, 'Drop']).forEach((verb, op) => {
+      if (verb) options.push({ verb, target: name, action: { kind: 'item', slot, op } });
+    });
+    options.push({ verb: 'Examine', target: name, action: { kind: 'examineObj', id: s.id } });
+    options.push({ verb: 'Cancel', target: '', action: { kind: 'cancel' } });
+    return options;
   }
 
   // --- actions -------------------------------------------------------------------------------
@@ -193,7 +268,31 @@ export class Game {
     switch (action.kind) {
       case 'cancel':
         return null;
+      case 'examineObj': {
+        const obj = this.world.configs.obj(action.id);
+        if (obj) this.events.chat(obj.examine ?? `It's ${/^[aeiou]/i.test(obj.name) ? 'an' : 'a'} ${obj.name.toLowerCase()}.`);
+        return null;
+      }
+      case 'item':
+        this.itemOp(action.slot, action.op);
+        return null;
+      case 'take': {
+        const g = this.groundItems.find((i) => i.uid === action.uid);
+        if (!g) return null;
+        this.stopGathering();
+        this.pendingTake = g.uid;
+        this.pending = null;
+        this.walkTo({ x: g.x, y: g.y });
+        return { x: g.x, y: g.y, kind: 'interact' };
+      }
+      case 'moveItem':
+        this.inventory.move(action.from, action.to);
+        this.events.inventoryChanged?.();
+        this.dirty = true;
+        return null;
       case 'walk':
+        this.stopGathering();
+        this.pendingTake = -1;
         this.pending = null;
         this.walkTo({ x: action.x, y: action.y });
         return { x: action.x, y: action.y, kind: 'walk' };
@@ -206,12 +305,153 @@ export class Game {
       case 'loc': {
         const found = this.world.findLoc(action.uid);
         if (!found) return null;
+        this.stopGathering();
+        this.pendingTake = -1;
         this.pending = { loc: found.loc, op: action.op };
         this.walkTo({ x: found.loc.x, y: found.loc.y }, found.loc);
         if (this.canInteract(found.loc)) this.path = [];
         return { x: found.loc.x, y: found.loc.y, kind: 'interact' };
       }
     }
+  }
+
+  private pendingTake = -1;
+
+  private itemOp(slot: number, op: number): void {
+    const s = this.inventory.slots[slot];
+    if (!s) return;
+    const obj = this.world.configs.obj(s.id);
+    const verb = (obj?.invOps[op] ?? (op === 4 ? 'Drop' : '')).toLowerCase();
+    if (verb === 'drop' || verb === 'destroy') {
+      this.inventory.removeSlot(slot);
+      this.dropToFloor(s.id, s.count);
+      this.events.inventoryChanged?.();
+      this.dirty = true;
+      return;
+    }
+    this.events.chat('Nothing interesting happens.');
+  }
+
+  private dropToFloor(id: number, count: number): void {
+    this.groundItems.push({ uid: allocUid(), id, count, x: this.x, y: this.y, plane: this.plane, expires: this.ticks + GROUND_ITEM_TICKS });
+    this.events.groundItemsChanged?.();
+  }
+
+  private stopGathering(): void {
+    this.gathering = null;
+  }
+
+  private bestTool(tools: [string, number, number][], skill: Resource['skill']): [string, number, number] | null {
+    const level = this.skills.level(skill);
+    for (const t of tools) {
+      const obj = this.world.configs.objByName(t[0]);
+      if (obj && this.inventory.count(obj.id) > 0 && level >= t[1]) return t;
+    }
+    return null;
+  }
+
+  private startGathering(loc: LocInstance, res: Resource, name: string): void {
+    const woodcutting = res.skill === 'Woodcutting';
+    if (this.skills.level(res.skill) < res.level) {
+      this.events.chat(`You need a ${res.skill} level of ${res.level} to ${woodcutting ? 'chop down this tree' : 'mine this rock'}.`);
+      return;
+    }
+    const tool = this.bestTool(woodcutting ? AXES : PICKAXES, res.skill);
+    if (!tool) {
+      this.events.chat(woodcutting ? 'You do not have an axe which you have the woodcutting level to use.' : 'You need a pickaxe to mine this rock. You do not have a pickaxe which you have the Mining level to use.');
+      return;
+    }
+    if (this.inventory.freeSlots() === 0 && !this.world.configs.objByName(res.product)?.stackable) {
+      this.events.chat(`Your inventory is too full to hold any more ${res.product.toLowerCase()}.`);
+      return;
+    }
+    this.events.chat(woodcutting ? 'You swing your axe at the tree.' : 'You swing your pick at the rock.');
+    void name;
+    this.gathering = { loc, res, toolBonus: tool[2], timer: res.interval };
+  }
+
+  private tickGathering(): void {
+    const g = this.gathering;
+    if (!g) return;
+    if (!this.world.findLoc(g.loc.uid) || this.world.locDef(g.loc.id)?.name === undefined || !resourceFor(this.world.locDef(g.loc.id)!.name, g.res.skill === 'Woodcutting' ? 'Chop down' : 'Mine')) {
+      this.gathering = null;
+      return;
+    }
+    if (--g.timer > 0) return;
+    g.timer = g.res.interval;
+    if (Math.random() >= successChance(g.res, this.skills.level(g.res.skill), g.toolBonus)) return;
+    const product = this.world.configs.objByName(g.res.product);
+    if (!product) {
+      this.events.chat(`(No item named "${g.res.product}" in this cache.)`, 'error');
+      this.gathering = null;
+      return;
+    }
+    if (this.inventory.add(product.id) > 0) {
+      this.events.chat(`Your inventory is too full to hold any more ${g.res.product.toLowerCase()}.`);
+      this.gathering = null;
+      return;
+    }
+    const woodcutting = g.res.skill === 'Woodcutting';
+    const what = g.res.product.toLowerCase();
+    this.events.chat(woodcutting ? `You get some ${what}.` : `You manage to mine some ${what.replace(/ ore$/, '')}.`);
+    const levelled = this.skills.addXp(g.res.skill, g.res.xp);
+    if (levelled) {
+      const article = /^[AEIOU]/.test(g.res.skill) ? 'an' : 'a';
+      this.events.chat(`Congratulations, you've just advanced ${article} ${g.res.skill} level. You are now level ${levelled}.`, 'system');
+    }
+    this.events.inventoryChanged?.();
+    this.events.skillsChanged?.();
+    this.dirty = true;
+    if (Math.random() < g.res.depleteChance) {
+      this.deplete(g.loc, g.res);
+      this.gathering = null;
+      if (!woodcutting) return;
+    }
+    if (this.inventory.freeSlots() === 0 && !product.stackable) {
+      this.events.chat(`Your inventory is too full to hold any more ${what}.`);
+      this.gathering = null;
+    }
+  }
+
+  private deplete(loc: LocInstance, res: Resource): void {
+    const original = loc.id;
+    const into = this.world.configs.depletedFor(original);
+    this.events.locsChanged(this.world.replaceLoc(loc, into));
+    this.respawns.push({ at: this.ticks + res.respawn, loc, id: original });
+  }
+
+  private tickWorld(): void {
+    for (let i = this.respawns.length - 1; i >= 0; i--) {
+      const r = this.respawns[i];
+      if (this.ticks < r.at) continue;
+      this.respawns.splice(i, 1);
+      if (this.world.findLoc(r.loc.uid)) this.events.locsChanged(this.world.replaceLoc(r.loc, r.id));
+    }
+    const before = this.groundItems.length;
+    for (let i = this.groundItems.length - 1; i >= 0; i--) if (this.groundItems[i].expires <= this.ticks) this.groundItems.splice(i, 1);
+    if (this.groundItems.length !== before) this.events.groundItemsChanged?.();
+  }
+
+  private tryTake(): void {
+    if (this.pendingTake < 0 || this.path.length) return;
+    const idx = this.groundItems.findIndex((g) => g.uid === this.pendingTake);
+    this.pendingTake = -1;
+    if (idx < 0) return;
+    const g = this.groundItems[idx];
+    if (g.x !== this.x || g.y !== this.y || g.plane !== this.plane) {
+      this.events.chat("I can't reach that!");
+      return;
+    }
+    const left = this.inventory.add(g.id, g.count);
+    if (left === g.count) {
+      this.events.chat("You don't have enough inventory space to hold that item.");
+      return;
+    }
+    if (left > 0) g.count = left;
+    else this.groundItems.splice(idx, 1);
+    this.events.inventoryChanged?.();
+    this.events.groundItemsChanged?.();
+    this.dirty = true;
   }
 
   private walkTo(dest: Tile, target?: LocInstance): void {
@@ -280,7 +520,13 @@ export class Game {
       this.energy = Math.min(10000, this.energy + (moved ? 25 : 45));
     }
     if (!this.path.length) this.dest = null;
-    if (moved) this.dirty = true;
+    if (moved) {
+      this.dirty = true;
+      this.gathering = null;
+    }
+    this.tryTake();
+    this.tickWorld();
+    if (!moved) this.tickGathering();
 
     if (this.pending && !this.path.length) {
       const { loc, op } = this.pending;
@@ -302,6 +548,11 @@ export class Game {
     const verb = (this.locOps(loc)[op] ?? '').toLowerCase();
     const def = this.activeDef(loc);
     const name = def?.name ?? 'that';
+    const res = def ? resourceFor(def.name, verb) : null;
+    if (res) {
+      this.startGathering(loc, res, name);
+      return;
+    }
     if (verb === 'open' || verb === 'close') {
       if (isWall(loc.type) || loc.type === LocType.WallDiagonal) {
         this.toggleDoor(loc);
@@ -342,7 +593,7 @@ export class Game {
         candidates.push({ x: loc.x - r, y: loc.y + dy }, { x: loc.x + sx - 1 + r, y: loc.y + dy });
       }
     }
-    const free = (t: Tile) => (c.get(target, t.x, t.y) & 0x100) === 0;
+    const free = (t: Tile) => (c.get(target, t.x, t.y) & Flag.Full) === 0;
     const spot = candidates.find(free);
     if (!spot) {
       this.events.chat("You can't go that way.");
