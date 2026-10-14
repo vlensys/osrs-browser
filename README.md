@@ -10,11 +10,14 @@ Firefox on Windows or Linux.
 
 ## Quick start
 
-1. Open the app (`npm run dev`, or the GitHub Pages deployment of this repo).
-2. Download a cache: on the [OpenRS2 archive](https://archive.openrs2.org/caches) pick a recent
-   **oldschool / live** cache and download its **disk.zip** (and `keys.json` for builds before ~237).
-3. Click **Choose disk.zip or cache files** and select the zip (or select/drop the extracted cache folder).
-4. Play. The cache and your save stay in IndexedDB, so later visits start straight away.
+1. Open the site (GitHub Pages deployment of this repo, or `npm run dev` locally).
+2. Click **Download latest cache & play**. Your browser fetches the newest complete *oldschool / live*
+   cache (~190 MB, once) straight from the community [OpenRS2 archive](https://archive.openrs2.org/caches)
+   and you spawn in Lumbridge. Nothing is downloaded from this project's servers.
+3. Next visits start instantly: the cache and your save stay in this browser (IndexedDB).
+
+Prefer your own files? Expand **Import a cache I already have** and pick an OpenRS2 `disk.zip` (plus
+`keys.json` for builds before ~237) or a client's cache folder — or drag and drop them.
 
 ### Controls
 

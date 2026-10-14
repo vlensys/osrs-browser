@@ -1,5 +1,5 @@
 import { fileURLToPath } from 'node:url';
-import { readdirSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
 import { HOUSE, TREES } from '../../tools/fixture/content.ts';
@@ -67,6 +67,37 @@ test('shows the import screen and rejects a non-cache file', async ({ page }) =>
   await expect(page.locator('#setup h1')).toHaveText('OSRS Browser');
   await page.locator('#pick-zip').setInputFiles({ name: 'notes.zip', mimeType: 'application/zip', buffer: Buffer.from('definitely not a zip') });
   await expect(page.locator('#setup-error')).toContainText('Not a zip');
+});
+
+test('downloads the latest cache from OpenRS2 in one click', async ({ page }) => {
+  // Mock the archive: CI must never pull real game data. The page sees the same CORS responses as live.
+  const zip = readFileSync(fileURLToPath(new URL('../fixtures/generated/disk.zip', import.meta.url)));
+  const cors = { 'access-control-allow-origin': '*' };
+  const listing = [
+    { id: 41, game: 'oldschool', environment: 'live', language: 'en', builds: [{ major: 240, minor: null }], timestamp: '2026-09-01T00:00:00Z', indexes: 3, valid_indexes: 3, groups: 9, valid_groups: 9, keys: 0, valid_keys: 0, size: zip.length, disk_store_valid: true },
+    { id: 42, game: 'oldschool', environment: 'live', language: 'en', builds: [{ major: 241, minor: null }], timestamp: '2026-10-01T00:00:00Z', indexes: 3, valid_indexes: 3, groups: 9, valid_groups: 9, keys: 0, valid_keys: 0, size: zip.length, disk_store_valid: true },
+  ];
+  const requested: string[] = [];
+  await page.route('https://archive.openrs2.org/**', async (route) => {
+    const url = route.request().url();
+    requested.push(url);
+    if (url.endsWith('/caches.json')) await route.fulfill({ json: listing, headers: cors });
+    else if (url.endsWith('/caches/runescape/42/disk.zip')) await route.fulfill({ body: zip, contentType: 'application/zip', headers: cors });
+    else await route.fulfill({ status: 404, headers: cors });
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Download latest cache & play' }).click();
+  await expect(page.locator('#game')).toBeVisible({ timeout: 60_000 });
+  await expect(page.locator('#coords')).toHaveText('3222, 3218, 0');
+  expect(requested.some((u) => u.endsWith('/42/disk.zip'))).toBe(true);
+});
+
+test('explains when the archive cannot be reached', async ({ page }) => {
+  await page.route('https://archive.openrs2.org/**', (route) => route.abort('internetdisconnected'));
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Download latest cache & play' }).click();
+  await expect(page.locator('#setup-error')).toContainText("Couldn't reach the OpenRS2 archive");
+  await expect(page.locator('details.manual')).toHaveAttribute('open', '');
 });
 
 test('imports a cache and renders the world with WebGL 2', async ({ page }) => {

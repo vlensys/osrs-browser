@@ -2,6 +2,7 @@ import { unsupportedReason } from './client/capabilities.ts';
 import { GameClient } from './client/game-client.ts';
 import { WebGLUnavailableError } from './client/render/renderer.ts';
 import { forgetCache, importCache, storedCacheMeta } from './storage/cache-import.ts';
+import { downloadLatestCache } from './storage/openrs2.ts';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -51,8 +52,33 @@ async function runImport(files: File[]): Promise<void> {
   }
 }
 
+async function runDownload(): Promise<void> {
+  const button = $<HTMLButtonElement>('download-latest');
+  const err = $('setup-error');
+  const progress = $('import-progress');
+  button.disabled = true;
+  err.hidden = true;
+  try {
+    const { files } = await downloadLatestCache((m, f) => setProgress(progress, m, f));
+    await importCache(files, (m, f) => setProgress(progress, m, 0.9 + f * 0.1));
+    startGame();
+  } catch (e) {
+    progress.hidden = true;
+    const msg = (e as Error).message;
+    err.textContent =
+      e instanceof TypeError
+        ? `Couldn't reach the OpenRS2 archive (${msg}). Check your connection, or import a cache manually below.`
+        : msg;
+    err.hidden = false;
+    (document.querySelector('details.manual') as HTMLDetailsElement).open = true;
+  } finally {
+    button.disabled = false;
+  }
+}
+
 function setupScreen(): void {
   show('setup');
+  $('download-latest').onclick = () => void runDownload();
   for (const id of ['pick-zip', 'pick-dir']) {
     const input = $<HTMLInputElement>(id);
     input.onchange = () => {

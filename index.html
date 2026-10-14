@@ -15,26 +15,37 @@
         <h1>OSRS Browser</h1>
         <p class="lede">A single-player, offline Old School RuneScape engine that runs entirely in your browser.</p>
         <p>
-          This project ships <strong>no game data</strong>. Import an OSRS cache you have access to — for example a
-          <code>disk.zip</code> for a recent <em>oldschool / live</em> build from the
-          <a href="https://archive.openrs2.org/caches" target="_blank" rel="noopener noreferrer">OpenRS2 archive</a>,
-          or the cache folder of a local client install. It is stored only in this browser.
+          This project ships <strong>no game data</strong>. The game needs an OSRS cache, which is kept only in this
+          browser. Fetch the newest one straight from the community
+          <a href="https://archive.openrs2.org/caches" target="_blank" rel="noopener noreferrer">OpenRS2 archive</a>
+          (about 190&nbsp;MB, downloaded once), or import one you already have.
         </p>
         <div class="actions">
-          <label class="button primary">
-            <input id="pick-zip" type="file" accept=".zip,.dat2,.json,application/zip" multiple hidden />
-            Choose disk.zip or cache files
-          </label>
-          <label class="button">
-            <input id="pick-dir" type="file" webkitdirectory directory multiple hidden />
-            Choose cache folder
-          </label>
+          <button id="download-latest" class="button primary" type="button">Download latest cache &amp; play</button>
         </div>
+        <details class="manual">
+          <summary>Import a cache I already have</summary>
+          <p>
+            A <code>disk.zip</code> (plus <code>keys.json</code> for builds before ~237) from OpenRS2, or the cache
+            folder of a local client install.
+          </p>
+          <div class="actions">
+            <label class="button">
+              <input id="pick-zip" type="file" accept=".zip,.dat2,.json,application/zip" multiple hidden />
+              Choose disk.zip or cache files
+            </label>
+            <label class="button">
+              <input id="pick-dir" type="file" webkitdirectory directory multiple hidden />
+              Choose cache folder
+            </label>
+          </div>
+        </details>
         <div id="drop" class="drop">…or drop a zip, files or a folder here</div>
         <div id="import-progress" class="progress" hidden><div class="bar"></div><span class="label"></span></div>
         <p id="setup-error" class="error" role="alert" hidden></p>
         <p class="fine">
-          Old School RuneScape is © Jagex Ltd. This is an unaffiliated fan project for personal, educational use.
+          Old School RuneScape and its game cache are © Jagex Ltd. Downloads come directly from OpenRS2 to your
+          browser; this site hosts no game files. Unaffiliated fan project for personal, educational use.
         </p>
       </div>
     </section>

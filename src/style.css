@@ -128,6 +128,24 @@ button:focus-visible {
   background: linear-gradient(#7a2e22, #521c14);
 }
 
+.manual {
+  margin: 8px 0 12px;
+}
+
+.manual summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.manual[open] summary {
+  color: var(--text);
+}
+
+.button:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
 .drop {
   border: 2px dashed var(--stone-600);
   border-radius: 6px;
