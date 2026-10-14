@@ -1,0 +1,28 @@
+{
+  "name": "osrs-browser",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Browser-only, single-player Old School RuneScape engine that runs entirely from a user-supplied game cache.",
+  "type": "module",
+  "license": "BSD-2-Clause",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --port 4173 --strictPort",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:cache": "vitest run tests/unit/real-cache.test.ts",
+    "test:e2e": "playwright test",
+    "fixture": "vite-node tools/make-test-cache.ts"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.59.1",
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.7",
+    "vitest": "^2.1.8"
+  }
+}
