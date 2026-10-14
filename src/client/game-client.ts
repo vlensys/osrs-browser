@@ -13,6 +13,7 @@ interface HeightSquare {
 }
 
 // The client's camera pitch range is 128..383 of 2048 units per turn: 22.5° to ~67.3°.
+const CAMERA_KEYS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'KeyW', 'KeyA', 'KeyS', 'KeyD']);
 const PITCH_MIN = (128 / 2048) * Math.PI * 2;
 const PITCH_MAX = (383 / 2048) * Math.PI * 2;
 const ZOOM_MIN = 4;
@@ -227,10 +228,10 @@ export class GameClient {
   private applyKeys(): void {
     const k = this.keys;
     const step = 0.035;
-    if (k.has('ArrowLeft')) this.yaw -= step;
-    if (k.has('ArrowRight')) this.yaw += step;
-    if (k.has('ArrowUp')) this.pitch = Math.min(PITCH_MAX, this.pitch + step * 0.6);
-    if (k.has('ArrowDown')) this.pitch = Math.max(PITCH_MIN, this.pitch - step * 0.6);
+    if (k.has('ArrowLeft') || k.has('KeyA')) this.yaw -= step;
+    if (k.has('ArrowRight') || k.has('KeyD')) this.yaw += step;
+    if (k.has('ArrowUp') || k.has('KeyW')) this.pitch = Math.min(PITCH_MAX, this.pitch + step * 0.6);
+    if (k.has('ArrowDown') || k.has('KeyS')) this.pitch = Math.max(PITCH_MIN, this.pitch - step * 0.6);
   }
 
   // --- input -------------------------------------------------------------------------------
@@ -309,9 +310,10 @@ export class GameClient {
         if (e.key === 'Escape') target.blur();
         return;
       }
-      if (e.key.startsWith('Arrow')) {
+      // Physical key positions (e.code), so WASD sits in the same place on AZERTY/QWERTZ layouts too.
+      if (CAMERA_KEYS.has(e.code)) {
         e.preventDefault();
-        this.keys.add(e.key);
+        this.keys.add(e.code);
       } else if (e.key === 'Enter') {
         e.preventDefault();
         $('chat-input').focus();
@@ -319,7 +321,7 @@ export class GameClient {
         this.closeMenu();
       }
     });
-    window.addEventListener('keyup', (e) => this.keys.delete(e.key));
+    window.addEventListener('keyup', (e) => this.keys.delete(e.code));
     // Alt-Tab / focus loss on Windows can swallow keyup events: never leave the camera spinning.
     window.addEventListener('blur', () => this.keys.clear());
     document.addEventListener('visibilitychange', () => {

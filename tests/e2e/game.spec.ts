@@ -186,12 +186,23 @@ test('camera controls respond to keys, wheel and the compass', async ({ page }) 
   await page.keyboard.up('ArrowLeft');
   const after = await page.evaluate(() => window.__game.projectTile(3222, 3230, 0));
   expect(after!.x).not.toBeCloseTo(before!.x, 0);
+  // WASD: D rotates back the other way, S tilts the camera.
+  await page.keyboard.down('KeyD');
+  await page.waitForTimeout(400);
+  await page.keyboard.up('KeyD');
+  const rotated = await page.evaluate(() => window.__game.projectTile(3222, 3230, 0));
+  expect(rotated!.x).not.toBeCloseTo(after!.x, 0);
+  await page.keyboard.down('KeyS');
+  await page.waitForTimeout(400);
+  await page.keyboard.up('KeyS');
+  const tilted = await page.evaluate(() => window.__game.projectTile(3222, 3230, 0));
+  expect(tilted!.y).not.toBeCloseTo(rotated!.y, 0);
   const box = (await canvas.boundingBox())!;
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.wheel(0, 600);
   await page.waitForTimeout(100);
   const zoomed = await page.evaluate(() => window.__game.projectTile(3222, 3230, 0));
-  expect(zoomed).not.toEqual(after);
+  expect(zoomed).not.toEqual(tilted);
   await page.locator('#compass').click();
   // Right-click anywhere opens the game's own menu instead of the browser's.
   await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2, { button: 'right' });

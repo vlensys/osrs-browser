@@ -25,7 +25,7 @@ Prefer your own files? Expand **Import a cache I already have** and pick an Open
 | --- | --- |
 | Walk / default action | Left-click the world or the minimap |
 | Context menu (all options, Examine) | Right-click |
-| Rotate / tilt camera | Arrow keys, or middle-mouse drag |
+| Rotate / tilt camera | Arrow keys or WASD (A/D rotate, W/S tilt), or middle-mouse drag |
 | Zoom | Mouse wheel |
 | Face north | Click the compass |
 | Toggle run | Run orb under the minimap |
