@@ -60,6 +60,7 @@ export type FromEngine =
   | { t: 'status'; message: string; fraction: number }
   | { t: 'fatal'; message: string }
   | { t: 'ready'; revision: number; player: PlayerState }
+  | { t: 'textures'; layers: number; pixels: Uint8Array; anim: Float32Array }
   | SquareMessage
   | { t: 'unload'; rx: number; ry: number }
   | { t: 'tick'; tick: number; player: PlayerState }

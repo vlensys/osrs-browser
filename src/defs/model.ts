@@ -19,6 +19,12 @@ export interface ModelData {
   facePriority: Uint8Array | null;
   /** Texture id per face or -1. */
   faceTexture: Int16Array | null;
+  /** Texture-mapping triangle per textured face (-1 = map from the face's own vertices). */
+  faceTexCoord: Int16Array | null;
+  /** Texture-mapping triangles: vertex indices defining each texture plane's origin (P) and axes (M, N). */
+  texP: Int32Array;
+  texM: Int32Array;
+  texN: Int32Array;
 }
 
 type Format = 'legacy' | 'v1' | 'v2' | 'v3';
@@ -261,21 +267,50 @@ export function decodeModel(d: Uint8Array): ModelData {
   const faceAlpha = alpha ? d.slice(at.alpha, at.alpha + fc) : null;
 
   let faceTexture: Int16Array | null = null;
+  let faceTexCoord: Int16Array | null = null;
+  const texP = new Int32Array(tc);
+  const texM = new Int32Array(tc);
+  const texN = new Int32Array(tc);
   if (fmt === 'v1' || fmt === 'v3') {
     if (h.textures) {
       faceTexture = new Int16Array(fc);
-      for (let i = 0, o = at.ftex; i < fc; i++, o += 2) faceTexture[i] = ((d[o] << 8) | d[o + 1]) - 1;
-    }
-  } else if (faceRenderType) {
-    // Legacy/v2: bit 1 of the render type marks a textured face whose "colour" is the texture id.
-    for (let i = 0; i < fc; i++) {
-      const t = faceRenderType[i];
-      if (t & 2) {
-        faceTexture ??= new Int16Array(fc).fill(-1);
-        faceTexture[i] = faceColour[i];
-        faceColour[i] = 127;
+      faceTexCoord = new Int16Array(fc).fill(-1);
+      const coords = new Packet(d, at.tcoord);
+      for (let i = 0, o = at.ftex; i < fc; i++, o += 2) {
+        faceTexture[i] = ((d[o] << 8) | d[o + 1]) - 1;
+        // One coordinate byte per textured face, present only when the model has texture triangles.
+        if (faceTexture[i] >= 0 && tc > 0) faceTexCoord[i] = coords.u8() - 1;
       }
-      faceRenderType[i] = t & 1;
+    }
+    // Simple (planar) triangles and complex projections keep their P/M/N in separate streams.
+    const simple = new Packet(d, at.tsimple);
+    const complex = new Packet(d, at.tcomplex);
+    for (let i = 0; i < tc; i++) {
+      const src = texKinds[i] === 0 ? simple : complex;
+      texP[i] = src.u16();
+      texM[i] = src.u16();
+      texN[i] = src.u16();
+    }
+  } else {
+    const tex = new Packet(d, at.tex);
+    for (let i = 0; i < tc; i++) {
+      texP[i] = tex.u16();
+      texM[i] = tex.u16();
+      texN[i] = tex.u16();
+    }
+    if (faceRenderType) {
+      // Legacy/v2: bit 1 marks a textured face whose "colour" is the texture id; bits 2+ pick its triangle.
+      for (let i = 0; i < fc; i++) {
+        const t = faceRenderType[i];
+        if (t & 2) {
+          faceTexture ??= new Int16Array(fc).fill(-1);
+          faceTexCoord ??= new Int16Array(fc).fill(-1);
+          faceTexture[i] = faceColour[i];
+          faceTexCoord[i] = t >> 2;
+          faceColour[i] = 127;
+        }
+        faceRenderType[i] = t & 1;
+      }
     }
   }
 
@@ -293,5 +328,9 @@ export function decodeModel(d: Uint8Array): ModelData {
     faceAlpha,
     facePriority,
     faceTexture,
+    faceTexCoord,
+    texP,
+    texM,
+    texN,
   };
 }

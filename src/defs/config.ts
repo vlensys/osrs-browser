@@ -1,5 +1,7 @@
 import { Archive, ConfigGroup, type Cache } from '../cache/cache.ts';
 import { Packet } from '../cache/packet.ts';
+import { hslToRgb } from '../util/colour.ts';
+import { decodeSprites } from './sprite.ts';
 
 export class UnknownOpcodeError extends Error {
   constructor(kind: string, id: number, opcode: number, pos: number) {
@@ -456,6 +458,15 @@ export function decodeTexture(id: number, data: Uint8Array): TextureDef {
   return { id, averageRgb, opaque, sprites: Int32Array.of(sprite), animDirection, animSpeed };
 }
 
+export const TEXTURE_SIZE = 128;
+
+/** Every texture as one 128x128 RGBA layer of a texture array, plus per-layer animation (du, dv per second). */
+export interface TextureAtlas {
+  layers: number;
+  pixels: Uint8Array;
+  anim: Float32Array;
+}
+
 /** Lazily decoded, memoised config tables. */
 export class ConfigStore {
   private underlays: Map<number, UnderlayDef> | null = null;
@@ -496,6 +507,64 @@ export class ConfigStore {
 
   texture(id: number): TextureDef | undefined {
     return this.textures!.get(id);
+  }
+
+  /** Decodes every texture's sprite into a single atlas (texture id = layer). */
+  async textureAtlas(): Promise<TextureAtlas> {
+    const ids = [...this.textures!.keys()];
+    const layers = ids.length ? Math.max(...ids) + 1 : 1;
+    const S = TEXTURE_SIZE;
+    const pixels = new Uint8Array(layers * S * S * 4);
+    const anim = new Float32Array(layers * 2);
+    for (const [id, tex] of this.textures!) {
+      const data = await this.cache.groupData(Archive.Sprites, tex.sprites[0]).catch(() => null);
+      if (!data) continue;
+      let frame;
+      try {
+        frame = decodeSprites(data)[0];
+      } catch {
+        continue;
+      }
+      if (!frame) continue;
+      // Place the frame in its full canvas, then scale the canvas (64 or 128 px) to 128 px, nearest-neighbour.
+      const cw = frame.maxWidth || frame.width;
+      const ch = frame.maxHeight || frame.height;
+      const base = id * S * S * 4;
+      // Flowing-water textures are mostly empty sparkle layers: give their empty texels the texture's own
+      // average colour, semi-transparent, so the surface reads as water. Static cut-outs (fences, leaves) stay
+      // see-through. (Heuristic: the client's exact compositing of these isn't documented in the cache.)
+      const fill = !tex.opaque && tex.animDirection > 0 ? hslToRgb(tex.averageRgb) : -1;
+      if (fill >= 0) {
+        for (let i = 0; i < S * S; i++) {
+          pixels[base + i * 4] = (fill >> 16) & 255;
+          pixels[base + i * 4 + 1] = (fill >> 8) & 255;
+          pixels[base + i * 4 + 2] = fill & 255;
+          pixels[base + i * 4 + 3] = 170;
+        }
+      }
+      for (let y = 0; y < S; y++) {
+        for (let x = 0; x < S; x++) {
+          const fx = Math.floor((x * cw) / S) - frame.offsetX;
+          const fy = Math.floor((y * ch) / S) - frame.offsetY;
+          if (fx < 0 || fy < 0 || fx >= frame.width || fy >= frame.height) continue;
+          const src = (fy * frame.width + fx) * 4;
+          const dst = base + (y * S + x) * 4;
+          if (fill >= 0 && frame.mask[src / 4] === 0) continue;
+          pixels[dst] = frame.pixels[src];
+          pixels[dst + 1] = frame.pixels[src + 1];
+          pixels[dst + 2] = frame.pixels[src + 2];
+          // Like the classic renderer: only palette index 0 is see-through in a texture.
+          pixels[dst + 3] = frame.mask[src / 4];
+        }
+      }
+      // Scrolling textures (water, lava, portals): direction 1-4, speed in texture-widths per ~50 s.
+      const rate = tex.animSpeed / 50;
+      const dirs: Record<number, [number, number]> = { 1: [0, rate], 2: [-rate, 0], 3: [0, -rate], 4: [rate, 0] };
+      const [du, dv] = dirs[tex.animDirection] ?? [0, 0];
+      anim[id * 2] = du;
+      anim[id * 2 + 1] = dv;
+    }
+    return { layers, pixels, anim };
   }
 
   loc(id: number): LocDef | undefined {

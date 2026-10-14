@@ -26,7 +26,14 @@ export default defineConfig({
       name: 'firefox',
       use: {
         ...devices['Desktop Firefox'],
-        launchOptions: { firefoxUserPrefs: { 'webgl.force-enabled': true } },
+        // CI VMs have no GPU and Firefox blocklists their GL: allow its in-process software WebGL (llvmpipe/WARP).
+        launchOptions: {
+          firefoxUserPrefs: {
+            'webgl.force-enabled': true,
+            'webgl.disable-fail-if-major-performance-caveat': true,
+            'webgl.out-of-process': false,
+          },
+        },
       },
     },
   ],

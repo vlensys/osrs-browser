@@ -14,7 +14,8 @@ export function unsupportedReason(): string | null {
     return (
       'WebGL 2 is unavailable. In Chrome/Edge enable "Use graphics acceleration when available"; ' +
       'in Firefox check that hardware acceleration is on and webgl.disabled is false (about:config). ' +
-      'On Linux, outdated GPU drivers can also block WebGL.'
+      'On Linux, Firefox blocks WebGL on some GPU drivers: setting webgl.force-enabled to true in about:config ' +
+      'turns it back on (software rendering if needed).'
     );
   }
   return null;

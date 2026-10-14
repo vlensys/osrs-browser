@@ -48,6 +48,9 @@ jobs:
       - run: npm run build
       # Uses an original, generated test cache (tools/fixture) — no Jagex data in CI.
       - run: npx playwright test --project=${{ matrix.browser }}
+        env:
+          # GPU-less Linux runners: make Mesa's software rasteriser the GL driver.
+          LIBGL_ALWAYS_SOFTWARE: ${{ runner.os == 'Linux' && '1' || '' }}
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

@@ -48,6 +48,9 @@ async function boot(radius: number): Promise<void> {
   post({ t: 'status', message: 'Decoding definitions…', fraction: 0.2 });
   const configs = new ConfigStore(cache);
   await configs.init();
+  post({ t: 'status', message: 'Decoding textures…', fraction: 0.3 });
+  const atlas = await configs.textureAtlas();
+  post({ t: 'textures', layers: atlas.layers, pixels: atlas.pixels, anim: atlas.anim }, [atlas.pixels.buffer, atlas.anim.buffer]);
   world = new World(cache, configs);
   builder = new SceneBuilder(world);
 

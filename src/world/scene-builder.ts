@@ -61,12 +61,46 @@ function rotatePoint(i: number, r: number): number {
   return i === 8 ? 8 : (i - r * 2 + 8) % 8;
 }
 
+/**
+ * Texture coordinates for a face's corners by projecting them onto the plane spanned by the mapping
+ * triangle: P is the texture origin, P→M the u axis and P→N the v axis (affine, so textures tile).
+ */
+function planarUv(px: Float32Array, py: Float32Array, pz: Float32Array, P: number, M: number, N: number, corners: number[]): number[] {
+  const ex = px[M] - px[P];
+  const ey = py[M] - py[P];
+  const ez = pz[M] - pz[P];
+  const fx = px[N] - px[P];
+  const fy = py[N] - py[P];
+  const fz = pz[N] - pz[P];
+  // Solve d = u·e + v·f in the least-squares sense (Gram matrix of the two axes).
+  const ee = ex * ex + ey * ey + ez * ez;
+  const ff = fx * fx + fy * fy + fz * fz;
+  const ef = ex * fx + ey * fy + ez * fz;
+  const det = ee * ff - ef * ef;
+  const out: number[] = [];
+  for (const c of corners) {
+    const dx = px[c] - px[P];
+    const dy = py[c] - py[P];
+    const dz = pz[c] - pz[P];
+    const de = dx * ex + dy * ey + dz * ez;
+    const df = dx * fx + dy * fy + dz * fz;
+    if (Math.abs(det) < 1e-12) {
+      out.push(0, 0);
+      continue;
+    }
+    out.push((de * ff - df * ef) / det, (df * ee - de * ef) / det);
+  }
+  return out;
+}
+
 export class SceneBuilder {
   private readonly models = new Map<number, ModelData | null>();
   private readonly light: [number, number, number];
 
   constructor(readonly world: World) {
-    const l = [-50, 70, -50];
+    // The game lights scenes from model-space (-50, -10, -50): west, slightly above, south. In GL space
+    // (y up, z = -north) that is (-50, 10, 50).
+    const l = [-50, 10, 50];
     const n = Math.hypot(l[0], l[1], l[2]);
     this.light = [l[0] / n, l[1] / n, l[2] / n];
   }
@@ -190,17 +224,18 @@ export class SceneBuilder {
     return rgbToHsl16(def.rgb);
   }
 
+  /** Terrain lightness multiplier at a tile corner: ambient 96/128 plus a diffuse term from the height field. */
   private tileLight(z: number, x: number, y: number): number {
     const w = this.world;
     const dx = w.cornerHeight(z, x + 1, y) - w.cornerHeight(z, x - 1, y);
     const dy = w.cornerHeight(z, x, y + 1) - w.cornerHeight(z, x, y - 1);
-    // Normal of the height field (heights negative-up, 128 units per tile).
+    // Height-field normal in GL space (heights are negative-up, 128 units per tile, central differences).
     const nx = dx / 256;
-    const nz = -dy / 256;
+    const nz = dy / 256;
     const len = Math.hypot(nx, 1, nz);
     const [lx, ly, lz] = this.light;
-    const d = (nx * lx + ly + nz * lz) / len;
-    return 0.75 + 0.35 * d;
+    const cos = (nx * lx + ly + nz * lz) / len;
+    return Math.min(126, Math.max(2, 96 + 80 * cos)) / 128;
   }
 
   private buildTerrain(sq: Square, z: number, level: number, mesh: MeshBuilder): void {
@@ -249,10 +284,25 @@ export class SceneBuilder {
         };
 
         const shape = over ? SHAPES[t.shape[i]] ?? SHAPES[0] : { over: [] as Tri[], under: FULL };
+        const overDef = over ? this.world.configs.overlay(over - 1) : undefined;
+        const overTex = overDef && overDef.texture >= 0 && this.world.configs.texture(overDef.texture) ? overDef.texture : -1;
         const overHsl = over ? this.overlayHsl(over - 1) : -1;
-        const overRgb = overHsl >= 0 ? hslToRgb(shadeHsl(overHsl, this.tileLight(z, wx, wy))) : -1;
+        const lightAt = (px: number, py: number) => {
+          const a = this.tileLight(z, wx, wy) + (this.tileLight(z, wx + 1, wy) - this.tileLight(z, wx, wy)) * px;
+          const b = this.tileLight(z, wx, wy + 1) + (this.tileLight(z, wx + 1, wy + 1) - this.tileLight(z, wx, wy + 1)) * px;
+          return a + (b - a) * py;
+        };
+        const overAt = (px: number, py: number) => {
+          if (overHsl < 0) return -1;
+          if (overTex >= 0) {
+            // Textured: vertex colour carries only the light level that modulates the texture.
+            const g = Math.min(255, Math.round(lightAt(px, py) * 255));
+            return (g << 16) | (g << 8) | g;
+          }
+          return hslToRgb(shadeHsl(overHsl, lightAt(px, py)));
+        };
         const rot = t.rotation[i];
-        const emit = (tris: Tri[], colourAt: (px: number, py: number) => number) => {
+        const emit = (tris: Tri[], colourAt: (px: number, py: number) => number, layer: number) => {
           for (const tri of tris) {
             const pts = tri.map((p) => rotatePoint(p, rot));
             const cols = pts.map((p) => colourAt(PX[p], PY[p]));
@@ -260,12 +310,12 @@ export class SceneBuilder {
             // Wind counter-clockwise when viewed from above (GL z = -world y).
             for (const k of [0, 2, 1]) {
               const p = pts[k];
-              mesh.vertex(wx + PX[p], -heightAt(PX[p], PY[p]) * UNIT, -(wy + PY[p]), cols[k], 255, pick);
+              mesh.vertex(wx + PX[p], -heightAt(PX[p], PY[p]) * UNIT, -(wy + PY[p]), cols[k], 255, pick, PX[p], 1 - PY[p], layer);
             }
           }
         };
-        emit(shape.over, () => overRgb);
-        if (under || over === 0) emit(shape.under, underAt);
+        emit(shape.over, overAt, overTex);
+        if (under || over === 0) emit(shape.under, underAt, -1);
       }
     }
   }
@@ -367,11 +417,55 @@ export class SceneBuilder {
     const retexFrom = def.retexFrom;
     const retexTo = def.retexTo;
     const [lx, ly, lz] = this.light;
-    const ambient = 0.62 + def.ambient / 256;
-    const contrast = 0.42 + def.contrast / 4096;
+    // Same lighting model as the client: lightness = ambient + 65536·cosθ / contrast, applied to HSL lightness.
+    const ambient = 64 + def.ambient;
+    const contrast = 768 + def.contrast;
     const flip = mirror ? 1 : 0;
+    const fcount = m.faceCount;
 
-    for (let f = 0; f < m.faceCount; f++) {
+    // Face normals (GL space) and smooth per-vertex normals from faces that use smooth shading.
+    const fnx = new Float32Array(fcount);
+    const fny = new Float32Array(fcount);
+    const fnz = new Float32Array(fcount);
+    const vnx = new Float32Array(n);
+    const vny = new Float32Array(n);
+    const vnz = new Float32Array(n);
+    for (let f = 0; f < fcount; f++) {
+      const a = m.fa[f];
+      const b = flip ? m.fc[f] : m.fb[f];
+      const c = flip ? m.fb[f] : m.fc[f];
+      const ux = px[b] - px[a];
+      const uy = py[b] - py[a];
+      const uz = pz[b] - pz[a];
+      const vx = px[c] - px[a];
+      const vy = py[c] - py[a];
+      const vz = pz[c] - pz[a];
+      let nx = uy * vz - uz * vy;
+      let ny = uz * vx - ux * vz;
+      let nz = ux * vy - uy * vx;
+      const len = Math.hypot(nx, ny, nz) || 1;
+      nx /= len;
+      ny /= len;
+      nz /= len;
+      // Model faces wind the other way from GL's convention; flip so normals point outwards.
+      fnx[f] = -nx;
+      fny[f] = -ny;
+      fnz[f] = -nz;
+      if ((m.faceRenderType ? m.faceRenderType[f] : 0) === 0) {
+        for (const v of [a, b, c]) {
+          vnx[v] += fnx[f];
+          vny[v] += fny[f];
+          vnz[v] += fnz[f];
+        }
+      }
+    }
+    const lightness = (nx: number, ny: number, nz: number) => {
+      const len = Math.hypot(nx, ny, nz) || 1;
+      const cos = (nx * lx + ny * ly + nz * lz) / len;
+      return Math.min(126, Math.max(2, ambient + (65536 * cos) / contrast));
+    };
+
+    for (let f = 0; f < fcount; f++) {
       const rt = m.faceRenderType ? m.faceRenderType[f] : 0;
       if (rt === 2) continue;
       const alphaIn = m.faceAlpha ? m.faceAlpha[f] : 0;
@@ -386,34 +480,35 @@ export class SceneBuilder {
         const k = retexFrom.indexOf(tex);
         if (k >= 0) tex = retexTo![k];
       }
+      if (tex >= 0 && !this.world.configs.texture(tex)) tex = -1;
+      const corners = [m.fa[f], flip ? m.fc[f] : m.fb[f], flip ? m.fb[f] : m.fc[f]];
+
+      // Texture plane: the face's mapping triangle (P, M, N), or the face itself.
+      let uv: number[] | null = null;
       if (tex >= 0) {
-        const t = this.world.configs.texture(tex);
-        if (t) hsl = t.averageRgb;
+        const tc = m.faceTexCoord ? m.faceTexCoord[f] : -1;
+        const [P, M, N] = tc >= 0 && tc < m.texP.length ? [m.texP[tc], m.texM[tc], m.texN[tc]] : [m.fa[f], m.fb[f], m.fc[f]];
+        uv = planarUv(px, py, pz, P, M, N, corners);
       }
-      const a = m.fa[f];
-      const b = flip ? m.fc[f] : m.fb[f];
-      const c = flip ? m.fb[f] : m.fc[f];
-      // Flat face normal for lighting.
-      const ux = px[b] - px[a];
-      const uy = py[b] - py[a];
-      const uz = pz[b] - pz[a];
-      const vx = px[c] - px[a];
-      const vy = py[c] - py[a];
-      const vz = pz[c] - pz[a];
-      let nx = uy * vz - uz * vy;
-      let ny = uz * vx - ux * vz;
-      let nz = ux * vy - uy * vx;
-      const len = Math.hypot(nx, ny, nz) || 1;
-      nx /= len;
-      ny /= len;
-      nz /= len;
-      const diffuse = Math.abs(nx * lx + ny * ly + nz * lz);
-      const rgb = hslToRgb(shadeHsl(hsl, ambient + contrast * diffuse));
+
       const alpha = 255 - alphaIn;
-      const target = alpha < 255 ? translucent : opaque;
-      target.vertex(px[a], py[a], pz[a], rgb, alpha, loc.uid);
-      target.vertex(px[b], py[b], pz[b], rgb, alpha, loc.uid);
-      target.vertex(px[c], py[c], pz[c], rgb, alpha, loc.uid);
+      // Non-opaque textures (water, glass, sparkles) blend over what's behind them, like the client.
+      const blended = alpha < 255 || (tex >= 0 && !this.world.configs.texture(tex)!.opaque);
+      const target = blended ? translucent : opaque;
+      for (let k = 0; k < 3; k++) {
+        const v = corners[k];
+        const smooth = rt === 0 || rt === 3;
+        const L = smooth && (vnx[v] || vny[v] || vnz[v]) ? lightness(vnx[v], vny[v], vnz[v]) : lightness(fnx[f], fny[f], fnz[f]);
+        let rgb: number;
+        if (tex >= 0) {
+          const g = Math.min(255, Math.round((L / 128) * 255));
+          rgb = (g << 16) | (g << 8) | g;
+        } else {
+          rgb = hslToRgb(shadeHsl(hsl, L / 128));
+        }
+        if (uv) target.vertex(px[v], py[v], pz[v], rgb, alpha, loc.uid, uv[k * 2], uv[k * 2 + 1], tex);
+        else target.vertex(px[v], py[v], pz[v], rgb, alpha, loc.uid);
+      }
     }
   }
 

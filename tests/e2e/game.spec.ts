@@ -48,7 +48,7 @@ async function clickTile(page: Page, x: number, y: number, button: 'left' | 'rig
 
 /** Top-down camera so scenery never hides the tiles we click. */
 async function topDown(page: Page) {
-  await page.evaluate(() => window.__game.setCamera(0, 1.35, 18));
+  await page.evaluate(() => window.__game.setCamera(0, 1.35, 26));
   await page.waitForTimeout(100);
 }
 

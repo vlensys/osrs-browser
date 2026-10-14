@@ -6,36 +6,58 @@ const VERT = `#version 300 es
 layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec4 aColour;
 layout(location = 2) in vec4 aPick;
+layout(location = 3) in vec3 aTex;
 uniform mat4 uViewProj;
 uniform mat4 uModel;
 uniform vec3 uEye;
+uniform float uTime;
+uniform highp sampler2D uAnim;
 out vec4 vColour;
 flat out vec4 vPick;
 out float vDist;
+out vec2 vUv;
+flat out float vLayer;
 void main() {
   vec4 world = uModel * vec4(aPos, 1.0);
   gl_Position = uViewProj * world;
   vColour = aColour;
   vPick = aPick;
   vDist = distance(world.xz, uEye.xz);
+  vLayer = aTex.z;
+  vec2 scroll = aTex.z >= 0.0 ? texelFetch(uAnim, ivec2(int(aTex.z), 0), 0).xy : vec2(0.0);
+  vUv = aTex.xy + scroll * uTime;
 }`;
 
 const FRAG = `#version 300 es
 precision highp float;
+precision mediump sampler2DArray;
 in vec4 vColour;
 flat in vec4 vPick;
 in float vDist;
+in vec2 vUv;
+flat in float vLayer;
 uniform int uPickPass;
+uniform int uBlend;
 uniform vec3 uFogColour;
 uniform vec2 uFog;
+uniform sampler2DArray uTextures;
 out vec4 outColour;
 void main() {
+  vec4 colour = vColour;
+  if (vLayer >= 0.0) {
+    vec4 t = texture(uTextures, vec3(vUv, vLayer));
+    // Opaque pass: alpha-test cut-outs. Blended pass: texture alpha scales the face's own alpha.
+    float a = uBlend == 1 ? vColour.a * t.a : 1.0;
+    if ((uBlend == 1 ? a : t.a) < (uBlend == 1 ? 0.02 : 0.5)) discard;
+    // Textured faces carry only their light level in the vertex colour.
+    colour = vec4(t.rgb * vColour.rgb * 1.15, a);
+  }
   if (uPickPass == 1) {
     outColour = vPick;
     return;
   }
   float f = clamp((vDist - uFog.x) / (uFog.y - uFog.x), 0.0, 1.0);
-  outColour = vec4(mix(vColour.rgb, uFogColour, f), vColour.a);
+  outColour = vec4(mix(colour.rgb, uFogColour, f), colour.a);
 }`;
 
 interface GpuMesh {
@@ -61,6 +83,10 @@ export class Renderer {
   private readonly squares = new Map<number, GpuSquare>();
   private avatar: GpuMesh | null = null;
   private avatarData: MeshData | null = null;
+  private textureArray: WebGLTexture | null = null;
+  private animTexture: WebGLTexture | null = null;
+  private atlas: { layers: number; pixels: Uint8Array; anim: Float32Array } | null = null;
+  private readonly start = performance.now();
   private pickFbo: WebGLFramebuffer | null = null;
   private pickTex: WebGLTexture | null = null;
   private pickDepth: WebGLRenderbuffer | null = null;
@@ -115,12 +141,46 @@ export class Renderer {
     if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(`Program link failed: ${gl.getProgramInfoLog(p)}`);
     this.program = p;
     this.uniforms = {};
-    for (const u of ['uViewProj', 'uModel', 'uEye', 'uPickPass', 'uFogColour', 'uFog']) this.uniforms[u] = gl.getUniformLocation(p, u);
+    for (const u of ['uViewProj', 'uModel', 'uEye', 'uPickPass', 'uBlend', 'uFogColour', 'uFog', 'uTime', 'uAnim', 'uTextures']) {
+      this.uniforms[u] = gl.getUniformLocation(p, u);
+    }
+    this.uploadTextures();
     gl.enable(gl.DEPTH_TEST);
     gl.depthFunc(gl.LEQUAL);
     // Map data mixes winding orders, so draw both faces.
     gl.disable(gl.CULL_FACE);
     this.pickFbo = null;
+  }
+
+  /** Installs the game's textures (one 128x128 layer per texture id) and their scroll speeds. */
+  setTextures(atlas: { layers: number; pixels: Uint8Array; anim: Float32Array }): void {
+    this.atlas = atlas;
+    this.uploadTextures();
+  }
+
+  private uploadTextures(): void {
+    const gl = this.gl;
+    const atlas = this.atlas ?? { layers: 1, pixels: new Uint8Array(128 * 128 * 4).fill(255), anim: new Float32Array(2) };
+    if (this.textureArray) gl.deleteTexture(this.textureArray);
+    if (this.animTexture) gl.deleteTexture(this.animTexture);
+    this.textureArray = gl.createTexture();
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.textureArray);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texImage3D(gl.TEXTURE_2D_ARRAY, 0, gl.RGBA8, 128, 128, atlas.layers, 0, gl.RGBA, gl.UNSIGNED_BYTE, atlas.pixels);
+    gl.generateMipmap(gl.TEXTURE_2D_ARRAY);
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.REPEAT);
+    // Per-layer scroll speeds as an RG32F row, read with texelFetch in the vertex shader.
+    this.animTexture = gl.createTexture();
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this.animTexture);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG32F, atlas.layers, 1, 0, gl.RG, gl.FLOAT, atlas.anim);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.activeTexture(gl.TEXTURE0);
   }
 
   private restore(): void {
@@ -151,6 +211,7 @@ export class Renderer {
       mk(data.positions, 0, 3, gl.FLOAT, false),
       mk(data.colours, 1, 4, gl.UNSIGNED_BYTE, true),
       mk(data.picks, 2, 4, gl.UNSIGNED_BYTE, true),
+      mk(data.texcoords, 3, 3, gl.FLOAT, false),
     ];
     gl.bindVertexArray(null);
     return { vao, buffers, count: data.vertexCount, data };
@@ -203,7 +264,8 @@ export class Renderer {
     // yaw 0 = camera south of the target looking north (GL -z is world north).
     this.eye = [target[0] - Math.sin(yaw) * cp * distance, target[1] + Math.sin(pitch) * distance, target[2] + Math.cos(yaw) * cp * distance];
     const aspect = this.canvas.width / this.canvas.height;
-    const proj = perspective((50 * Math.PI) / 180, aspect, 0.1, 200);
+    // Narrow-ish field of view like the client's 3D viewport (focal length ~512 px on a ~334 px tall view).
+    const proj = perspective((38 * Math.PI) / 180, aspect, 0.1, 200);
     this.viewProj = multiply(proj, lookAt(this.eye, target, [0, 1, 0]));
   }
 
@@ -216,11 +278,20 @@ export class Renderer {
     gl.uniform1i(u.uPickPass, pickPass ? 1 : 0);
     gl.uniform3fv(u.uFogColour, this.fogColour);
     gl.uniform2fv(u.uFog, this.fogRange);
+    gl.uniform1f(u.uTime, (performance.now() - this.start) / 1000);
+    gl.uniform1i(u.uTextures, 0);
+    gl.uniform1i(u.uAnim, 1);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.textureArray);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this.animTexture);
+    gl.activeTexture(gl.TEXTURE0);
     const ident = identity();
     gl.uniformMatrix4fv(u.uModel, false, ident);
 
     gl.disable(gl.BLEND);
     gl.depthMask(true);
+    gl.uniform1i(u.uBlend, 0);
     for (const sq of this.squares.values()) {
       for (let z = 0; z <= maxPlane; z++) {
         const m = sq.planes[z]?.opaque;
@@ -239,6 +310,7 @@ export class Renderer {
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
       gl.depthMask(false);
+      gl.uniform1i(u.uBlend, 1);
     }
     for (const sq of this.squares.values()) {
       for (let z = 0; z <= maxPlane; z++) {

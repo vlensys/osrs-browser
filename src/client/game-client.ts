@@ -12,10 +12,11 @@ interface HeightSquare {
   bridges: Uint8Array;
 }
 
-const PITCH_MIN = 0.35;
-const PITCH_MAX = 1.35;
+// The client's camera pitch range is 128..383 of 2048 units per turn: 22.5° to ~67.3°.
+const PITCH_MIN = (128 / 2048) * Math.PI * 2;
+const PITCH_MAX = (383 / 2048) * Math.PI * 2;
 const ZOOM_MIN = 4;
-const ZOOM_MAX = 30;
+const ZOOM_MAX = 26;
 
 export interface ClientOptions {
   worker: Worker;
@@ -36,8 +37,8 @@ export class GameClient {
   private tickStart = 0;
   private facing = 0;
   private yaw = 0;
-  private pitch = 0.9;
-  private zoom = 12;
+  private pitch = PITCH_MIN + (PITCH_MAX - PITCH_MIN) * 0.35;
+  private zoom = 10;
   private readonly keys = new Set<string>();
   private dragging: { x: number; y: number; pointer: number } | null = null;
   private hoverSeq = 0;
@@ -78,6 +79,9 @@ export class GameClient {
         this.setPlayer(msg.player, true);
         this.opts.onReady();
         $('view').focus();
+        break;
+      case 'textures':
+        this.renderer.setTextures(msg);
         break;
       case 'square':
         this.addSquare(msg);
