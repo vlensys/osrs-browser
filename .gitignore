@@ -3,7 +3,8 @@ dist/
 test-results/
 playwright-report/
 # Never commit game data: caches are copyrighted by Jagex and must be supplied by the user.
-cache/
+/cache/
+**/main_file_cache/
 *.dat2
 *.idx*
 disk.zip
